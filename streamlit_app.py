@@ -173,7 +173,7 @@ def main():
         st.subheader("Akun Instagram")
         accounts_input = st.text_area(
             "Masukkan akun (format: username,password[,2fa_code])",
-            value="username,password",
+            value="jmoriarty50,Drake1243",
             height=150,
             help="Satu akun per baris. Untuk 2FA, tambahkan kode setelah password dipisahkan koma"
         )
@@ -181,7 +181,7 @@ def main():
         st.subheader("Target")
         target_post = st.text_input(
             "URL Postingan Target",
-            value="https://www.instagram.com/p/Cxxxxxxxxxx/",
+            value="https://www.instagram.com/p/DPOOZrfE8y6/",
             help="URL lengkap postingan Instagram"
         )
         
