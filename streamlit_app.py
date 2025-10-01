@@ -243,8 +243,8 @@ def run_buzzer_for_account(cl: Client, username: str, target_url: str, comments:
 # STREAMLIT UI
 # ================================
 def main():
-    st.set_page_config(page_title="Sistem Bot Instagram (Streamlit + Fix)", layout="wide")
-    st.title("🤖 Sistem Bot Instagram — Streamlit (menggunakan referensi skrip Anda)")
+    st.set_page_config(page_title="Sistem Jago", layout="wide")
+    st.title("🤖 Sistem Jago")
 
     with st.sidebar:
         st.header("⚙️ Konfigurasi Utama (dari referensi)")
