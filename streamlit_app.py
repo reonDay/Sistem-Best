@@ -13,6 +13,15 @@ from instagrapi import Client
 from instagrapi.exceptions import ChallengeRequired, TwoFactorRequired, ClientError
 
 # -----------------------
+# PATCH: Fix untuk validation error scans_profile
+# -----------------------
+from pydantic import ConfigDict
+from instagrapi.types import Media
+
+# Patch untuk membuat field scans_profile optional
+Media.model_config = ConfigDict(extra='allow', arbitrary_types_allowed=True)
+
+# -----------------------
 # Konfigurasi untuk server gratis
 # -----------------------
 st.set_page_config(
@@ -121,19 +130,21 @@ def login_client_for_account(username: str, password: str, two_factor_code: str 
 
 def run_buzzer_for_account(cl: Client, username: str, target_post_url: str, comments: list, comment_counts: dict, max_comments: int):
     try:
-        # Ambil media_pk dari URL (tetap gunakan ini)
+        # Dapatkan media PK dari URL
         media_pk = cl.media_pk_from_url(target_post_url)
-        logger.info(f"[{username}] Memproses postingan: pk={media_pk} url={target_post_url}")
-
-        # Like postingan (langsung, tanpa memanggil media_info)
+        
+        # HINDARI menggunakan media_info yang menyebabkan error
+        logger.info(f"[{username}] Memproses postingan dengan PK: {media_pk}")
+        
+        # Like postingan
         try:
             cl.media_like(media_pk)
-            logger.info(f"[{username}] Berhasil like postingan (pk={media_pk})")
+            logger.info(f"[{username}] Berhasil like postingan")
             time.sleep(2)
         except Exception as e:
-            logger.warning(f"[{username}] Gagal like (pk={media_pk}): {e}")
-
-        # Komentar (cek limit dulu)
+            logger.warning(f"[{username}] Gagal like: {e}")
+        
+        # Komentar
         current_count = comment_counts.get(username, 0)
         if current_count < max_comments and comments:
             comment_text = random.choice(comments)
@@ -143,19 +154,18 @@ def run_buzzer_for_account(cl: Client, username: str, target_post_url: str, comm
                 logger.info(f"[{username}] Berhasil komentar: '{comment_text}' ({comment_counts[username]}/{max_comments})")
                 time.sleep(2)
             except Exception as e:
-                logger.warning(f"[{username}] Gagal komentar (pk={media_pk}): {e}")
+                logger.warning(f"[{username}] Gagal komentar: {e}")
         else:
             logger.info(f"[{username}] Skip komentar (limit tercapai atau tidak ada komentar)")
-
+            
     except ChallengeRequired:
         raise RuntimeError(f"[{username}] Diperlukan verifikasi challenge")
     except Exception as e:
-        # Tangkap error umum (termasuk pydantic ValidationError saat memanggil media_info jika ada)
         logger.error(f"[{username}] Error saat memproses postingan: {e}")
         raise
 
 # ================================
-# UI Streamlit
+# UI Streamlit (sama seperti sebelumnya)
 # ================================
 
 def main():
