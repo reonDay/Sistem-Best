@@ -247,14 +247,14 @@ def main():
     st.title("🤖 Sistem Jago")
 
     with st.sidebar:
-        st.header("⚙️ Konfigurasi Utama (dari referensi)")
+        st.header("⚙️ Konfigurasi Utama")
         accounts_input = st.text_area("Masukkan akun (username,password[,2fa]) — satu per baris",
                                       value=DEFAULT_ACCOUNTS, height=140)
         proxy_input = st.text_input("Proxy (opsional, format http://user:pass@host:port)", value="")
         target_post = st.text_input("URL Postingan Target", value=DEFAULT_TARGET)
         comments_input = st.text_area("Daftar Komentar (satu per baris)", value=DEFAULT_COMMENTS, height=120)
-        max_comments = st.number_input("Max Komentar per Akun", min_value=0, max_value=1000, value=300)
-        iterations = st.number_input("Jumlah Putaran (per akun)", min_value=1, max_value=10000, value=100)
+        max_comments = st.number_input("Max Komentar per Akun", min_value=0, max_value=1000, value=1)
+        iterations = st.number_input("Jumlah Putaran (per akun)", min_value=1, max_value=10000, value=1)
         delay_after_like = st.number_input("Delay setelah like (detik)", min_value=0, value=5)
         delay_after_comment = st.number_input("Delay setelah comment (detik)", min_value=0, value=5)
         delay_between_accounts = st.number_input("Delay antar akun (detik)", min_value=0, value=5)
