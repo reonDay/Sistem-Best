@@ -121,20 +121,19 @@ def login_client_for_account(username: str, password: str, two_factor_code: str 
 
 def run_buzzer_for_account(cl: Client, username: str, target_post_url: str, comments: list, comment_counts: dict, max_comments: int):
     try:
-        # Dapatkan media PK dari URL
+        # Ambil media_pk dari URL (tetap gunakan ini)
         media_pk = cl.media_pk_from_url(target_post_url)
-        media_info = cl.media_info(media_pk)
-        logger.info(f"[{username}] Memproses postingan: {media_info.code}")
-        
-        # Like postingan
+        logger.info(f"[{username}] Memproses postingan: pk={media_pk} url={target_post_url}")
+
+        # Like postingan (langsung, tanpa memanggil media_info)
         try:
             cl.media_like(media_pk)
-            logger.info(f"[{username}] Berhasil like postingan")
+            logger.info(f"[{username}] Berhasil like postingan (pk={media_pk})")
             time.sleep(2)
         except Exception as e:
-            logger.warning(f"[{username}] Gagal like: {e}")
-        
-        # Komentar
+            logger.warning(f"[{username}] Gagal like (pk={media_pk}): {e}")
+
+        # Komentar (cek limit dulu)
         current_count = comment_counts.get(username, 0)
         if current_count < max_comments and comments:
             comment_text = random.choice(comments)
@@ -144,13 +143,14 @@ def run_buzzer_for_account(cl: Client, username: str, target_post_url: str, comm
                 logger.info(f"[{username}] Berhasil komentar: '{comment_text}' ({comment_counts[username]}/{max_comments})")
                 time.sleep(2)
             except Exception as e:
-                logger.warning(f"[{username}] Gagal komentar: {e}")
+                logger.warning(f"[{username}] Gagal komentar (pk={media_pk}): {e}")
         else:
             logger.info(f"[{username}] Skip komentar (limit tercapai atau tidak ada komentar)")
-            
+
     except ChallengeRequired:
         raise RuntimeError(f"[{username}] Diperlukan verifikasi challenge")
     except Exception as e:
+        # Tangkap error umum (termasuk pydantic ValidationError saat memanggil media_info jika ada)
         logger.error(f"[{username}] Error saat memproses postingan: {e}")
         raise
 
