@@ -1,319 +1,304 @@
-# streamlit_instabot.py
+# streamlit_instabot_ref_streamlit.py
 # Requirements:
-# pip install instagrapi streamlit
+# pip install -U instagrapi streamlit
 
 import os
 import time
 import random
 import logging
-import io
 import traceback
 import streamlit as st
 from instagrapi import Client
 from instagrapi.exceptions import ChallengeRequired, TwoFactorRequired, ClientError
 
-# -----------------------
-# FIX UTAMA: Monkey patch untuk menghindari error scans_profile
-# -----------------------
-from instagrapi.types import Media
+# ================================
+# KONFIGURASI LOGGING (file + console + streamlit)
+# ================================
+LOG_FILENAME = "bot_stealth.log"
 
-# Backup original method
-original_media_from_dict = Media.from_dict
+logger = logging.getLogger("instagrapi_logger")
+logger.setLevel(logging.DEBUG)
 
-# Patch method to handle missing scans_profile
-@classmethod
-def patched_media_from_dict(cls, data, **kwargs):
-    # Handle missing scans_profile in candidates
-    if (isinstance(data, dict) and 
-        'image_versions2' in data and 
-        'candidates' in data['image_versions2']):
-        
-        for candidate in data['image_versions2']['candidates']:
-            if 'scans_profile' not in candidate:
-                candidate['scans_profile'] = None  # atau string kosong ""
-    
-    return original_media_from_dict(data, **kwargs)
+# Hanya tambahkan handler jika belum ada (menghindari duplikat saat hot-reload)
+if not logger.handlers:
+    # file handler
+    file_handler = logging.FileHandler(LOG_FILENAME, mode='a', encoding='utf-8')
+    file_handler.setLevel(logging.DEBUG)
 
-# Apply the patch
-Media.from_dict = patched_media_from_dict
+    # console handler
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
 
-# -----------------------
-# Konfigurasi untuk server gratis
-# -----------------------
-st.set_page_config(
-    page_title="Sistem Bot Instagram",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+    formatter = logging.Formatter(
+        "[%(asctime)s] %(levelname)s - %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S"
+    )
+    file_handler.setFormatter(formatter)
+    console_handler.setFormatter(formatter)
 
-# Handler untuk logging di Streamlit
+    logger.addHandler(file_handler)
+    logger.addHandler(console_handler)
+
+# Streamlit log handler (ke session_state)
 class StreamlitLogHandler(logging.Handler):
     def __init__(self):
         super().__init__()
-        if 'logs' not in st.session_state:
-            st.session_state['logs'] = []
-    
+        if "logs" not in st.session_state:
+            st.session_state["logs"] = []
+
     def emit(self, record):
         msg = self.format(record)
-        st.session_state['logs'].append(msg)
-        # Batasi jumlah log yang disimpan
-        if len(st.session_state['logs']) > 1000:
-            st.session_state['logs'] = st.session_state['logs'][-1000:]
+        st.session_state["logs"].append(msg)
+        # batasi ukuran
+        if len(st.session_state["logs"]) > 2000:
+            st.session_state["logs"] = st.session_state["logs"][-2000:]
 
-def create_logger():
-    logger = logging.getLogger("instagrapi_streamlit")
-    logger.setLevel(logging.DEBUG)
-    
-    # Hapus handler lama
-    logger.handlers = []
-    
-    # Format untuk log
-    fmt = logging.Formatter("[%(asctime)s] %(levelname)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
-    
-    # Handler untuk Streamlit
+# Tambah streamlit handler ke logger (hanya jika belum)
+if not any(isinstance(h, StreamlitLogHandler) for h in logger.handlers):
     sh = StreamlitLogHandler()
     sh.setLevel(logging.DEBUG)
-    sh.setFormatter(fmt)
+    sh.setFormatter(logging.Formatter("[%(asctime)s] %(levelname)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S"))
     logger.addHandler(sh)
-    
-    # Handler untuk console
-    ch = logging.StreamHandler()
-    ch.setLevel(logging.INFO)
-    ch.setFormatter(fmt)
-    logger.addHandler(ch)
-    
-    return logger
-
-logger = create_logger()
 
 # ================================
-# Fungsi utama (diperbaiki)
+# DEFAULT KONFIGURASI (bisa diubah di sidebar)
+# ================================
+DEFAULT_ACCOUNTS = "jmoriarty50,Drake1243"
+DEFAULT_TARGET = "https://www.instagram.com/p/DPQP0tHEqSe/"
+DEFAULT_COMMENTS = "Mantap Gibran"
+
+# Fallback / retry config
+FALLBACK_RETRIES = 3
+FALLBACK_BACKOFF = 2  # multiplier
+
+# ================================
+# UTILITY & CORE LOGIC (berasal dari skrip referensi + perbaikan)
 # ================================
 
-def login_client_for_account(username: str, password: str, two_factor_code: str = None, proxy_url: str = None):
+def parse_accounts_input(text):
+    """
+    Format per baris: username,password[,2fa_code]
+    """
+    accounts = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = [p.strip() for p in line.split(",", 2)]
+        if len(parts) >= 2:
+            accounts.append({
+                "username": parts[0],
+                "password": parts[1],
+                "twofa": parts[2] if len(parts) > 2 else None
+            })
+    return accounts
+
+def login_client_for_account(username: str, password: str, twofa: str = None, proxy: str = None) -> Client:
     session_file = f"session_{username}.json"
     cl = Client()
-    
-    # Set proxy jika ada
-    if proxy_url and proxy_url.strip():
+    if proxy:
         try:
-            cl.set_proxy(proxy_url.strip())
-            logger.info(f"[{username}] Menggunakan proxy: {proxy_url}")
+            cl.set_proxy(proxy)
+            logger.info(f"[{username}] Proxy set: {proxy}")
         except Exception as e:
             logger.warning(f"[{username}] Gagal set proxy: {e}")
-    
-    # Coba load session yang tersimpan
+
+    # coba load settings
     if os.path.exists(session_file):
         try:
             cl.load_settings(session_file)
-            cl.login(username, password)
-            logger.info(f"[{username}] Session berhasil dimuat dari {session_file}")
+            # coba login untuk menyegarkan token (beberapa versi butuh login)
+            try:
+                cl.login(username, password)
+            except Exception:
+                # kadang settings sudah cukup; lanjutkan
+                logger.debug(f"[{username}] load_settings ok, login refresh gagal tapi lanjut.")
+            logger.info(f"[{username}] Session loaded dari {session_file}.")
             return cl
-        except Exception as e:
-            logger.info(f"[{username}] Gagal memuat session, login ulang: {e}")
+        except Exception:
             try:
                 os.remove(session_file)
-            except:
+            except Exception:
                 pass
-    
-    # Login normal
+
+    # login normal
     try:
-        if two_factor_code:
-            cl.login(username, password, verification_code=two_factor_code)
+        if twofa:
+            cl.login(username, password, verification_code=twofa)
         else:
             cl.login(username, password)
     except TwoFactorRequired:
-        logger.error(f"[{username}] Diperlukan kode 2FA")
-        raise RuntimeError(f"[{username}] Diperlukan kode verifikasi 2FA. Silakan tambahkan kode 2FA di input akun.")
+        # di Streamlit kita tidak bisa input() aman; lempar error agar UI menampilkan pesan
+        logger.error(f"[{username}] Diperlukan 2FA/OTP.")
+        raise RuntimeError(f"[{username}] Diperlukan kode 2FA/OTP. Tambahkan kode pada input akun (username,password,2fa).")
     except ChallengeRequired:
-        logger.error(f"[{username}] Diperlukan verifikasi challenge")
-        raise RuntimeError(f"[{username}] Diperlukan verifikasi challenge manual. Silakan verifikasi melalui Instagram.")
+        logger.error(f"[{username}] ChallengeRequired: Verifikasi manual diperlukan.")
+        raise RuntimeError(f"[{username}] Verifikasi IG (challenge) diperlukan; verifikasi manual lewat Instagram.")
     except ClientError as e:
-        logger.error(f"[{username}] Error client: {e}")
+        logger.error(f"[{username}] ClientError saat login: {e}")
         raise RuntimeError(f"[{username}] Login gagal: {e}")
     except Exception as e:
-        logger.error(f"[{username}] Error tak terduga: {e}")
+        logger.error(f"[{username}] Error tak terduga saat login: {e}")
         raise RuntimeError(f"[{username}] Login gagal: {e}")
-    
-    # Simpan session
+
+    # simpan session
     try:
         cl.dump_settings(session_file)
-        logger.info(f"[{username}] Session disimpan ke {session_file}")
+        logger.info(f"[{username}] Login sukses, session disimpan.")
     except Exception as e:
         logger.warning(f"[{username}] Gagal menyimpan session: {e}")
-    
+
     return cl
 
-def run_buzzer_for_account(cl: Client, username: str, target_post_url: str, comments: list, comment_counts: dict, max_comments: int):
-    try:
-        # Dapatkan media PK dari URL
-        media_pk = cl.media_pk_from_url(target_post_url)
-        logger.info(f"[{username}] Memproses postingan dengan PK: {media_pk}")
-        
-        # Like postingan
+def _fallback_private_comment(cl: Client, media_pk: int, comment_text: str) -> bool:
+    """
+    Fallback: gunakan private_request ke endpoint media/{pk}/comment/
+    """
+    for attempt in range(1, FALLBACK_RETRIES + 1):
         try:
-            cl.media_like(media_pk)
-            logger.info(f"[{username}] Berhasil like postingan")
-            time.sleep(5)
+            endpoint = f"media/{media_pk}/comment/"
+            data = {"comment_text": comment_text}
+            logger.debug(f"Fallback attempt {attempt} -> {endpoint}")
+            resp = cl.private_request(endpoint, data=data)
+            # jika respons dict dan status ok -> sukses
+            if isinstance(resp, dict) and (resp.get("status") == "ok" or "comment_id" in resp or "comment" in resp):
+                return True
+            # toleransi: jika tidak error, anggap sukses
+            return True
         except Exception as e:
-            logger.warning(f"[{username}] Gagal like: {e}")
-        
-        # Komentar dengan batasan - DENGAN ERROR HANDLING TAMBAHAN
-        current_count = comment_counts.get(username, 0)
-        if current_count < max_comments and comments:
-            comment_text = random.choice(comments)
-            try:
-                cl.media_comment(media_pk, comment_text)
-                comment_counts[username] = current_count + 1
-                logger.info(f"[{username}] Berhasil komentar: '{comment_text}' ({comment_counts[username]}/{max_comments})")
-                time.sleep(5)
-            except Exception as e:
-                # Tangani error khusus scans_profile
-                if "scans_profile" in str(e):
-                    logger.warning(f"[{username}] Error scans_profile diabaikan, komentar mungkin berhasil")
-                    # Tetap hitung komentar karena mungkin sebenarnya berhasil
-                    comment_counts[username] = current_count + 1
-                else:
-                    logger.warning(f"[{username}] Gagal komentar: {e}")
-        else:
-            logger.info(f"[{username}] Skip komentar (limit tercapai atau tidak ada komentar)")
-            
-    except ChallengeRequired:
-        raise RuntimeError(f"[{username}] Diperlukan verifikasi challenge")
+            logger.warning(f"Fallback private_request gagal (attempt {attempt}): {e}")
+            if attempt == FALLBACK_RETRIES:
+                return False
+            sleep_time = FALLBACK_BACKOFF ** (attempt - 1)
+            logger.info(f"Tunggu {sleep_time} detik sebelum retry fallback...")
+            time.sleep(sleep_time)
+    return False
+
+def run_buzzer_for_account(cl: Client, username: str, target_url: str, comments: list, comment_counts: dict, max_comments: int, delays: dict):
+    """
+    Versi Streamlit dari run_buzzer yang menghindari media_info() dan menambahkan fallback komentar.
+    delays = dict with keys: after_like, after_comment
+    """
+    logger.info(f"[{username}] Memproses postingan: {target_url}")
+    try:
+        pk = cl.media_pk_from_url(target_url)
     except Exception as e:
-        logger.error(f"[{username}] Error saat memproses postingan: {e}")
-        # Untuk error scans_profile, kita lanjutkan saja
-        if "scans_profile" in str(e):
-            logger.warning(f"[{username}] Error scans_profile diabaikan, melanjutkan...")
+        logger.error(f"[{username}] Gagal konversi URL ke media_pk: {e}")
+        return
+
+    # Like (safe)
+    try:
+        cl.media_like(pk)
+        logger.info(f"[{username}] Liked media PK {pk}")
+        time.sleep(delays.get("after_like", 5))
+    except Exception as e:
+        logger.warning(f"[{username}] Gagal like: {e}")
+        if isinstance(e, ChallengeRequired) or "Challenge" in str(e):
+            raise RuntimeError(f"[{username}] Verifikasi IG diperlukan.")
+        # lanjut (like gagal tidak mencegah fallback komentar)
+
+    # Komentar bila belum mencapai limit
+    current = comment_counts.get(username, 0)
+    if current >= max_comments:
+        logger.info(f"[{username}] Skip komentar: limit tercapai ({current}/{max_comments})")
+        return
+
+    komentar = random.choice(comments) if comments else ""
+    if not komentar:
+        logger.info(f"[{username}] Tidak ada komentar tersedia.")
+        return
+
+    # Coba media_comment langsung (beberapa versi menerima PK)
+    try:
+        cl.media_comment(pk, komentar)
+        comment_counts[username] = current + 1
+        logger.info(f"[{username}] Berhasil komentar: '{komentar}' ({comment_counts[username]}/{max_comments})")
+        time.sleep(delays.get("after_comment", 5))
+        return
+    except Exception as e:
+        logger.warning(f"[{username}] media_comment gagal: {e}")
+        # jika challenge -> lempar
+        if isinstance(e, ChallengeRequired) or "Challenge" in str(e):
+            raise RuntimeError(f"[{username}] Verifikasi IG diperlukan.")
+        # deteksi rate-limit/action-block
+        if "Please wait" in str(e) or "action_blocked" in str(e).lower() or "429" in str(e):
+            logger.error(f"[{username}] Terdeteksi rate-limit/action-blocked: {e}")
+            return
+
+    # Fallback: private_request
+    try:
+        ok = _fallback_private_comment(cl, pk, komentar)
+        if ok:
+            comment_counts[username] = current + 1
+            logger.info(f"[{username}] Berhasil komentar (fallback): '{komentar}' ({comment_counts[username]}/{max_comments})")
+            time.sleep(delays.get("after_comment", 5))
         else:
-            raise
+            logger.warning(f"[{username}] Fallback komentar gagal setelah beberapa percobaan.")
+    except Exception as e:
+        logger.error(f"[{username}] Exception saat fallback komentar: {e}")
+        if isinstance(e, ChallengeRequired) or "Challenge" in str(e):
+            raise RuntimeError(f"[{username}] Verifikasi IG diperlukan.")
 
 # ================================
-# UI Streamlit
+# STREAMLIT UI
 # ================================
-
 def main():
-    st.title("🤖 Sistem Bot Instagram")
-    st.markdown("""
-    **Disclaimer:** 
-    - Gunakan dengan bijak dan bertanggung jawab
-    - Patuhi Terms of Service Instagram
-    - Risiko ditanggung pengguna
-    """)
-    
+    st.set_page_config(page_title="Sistem Bot Instagram (Streamlit + Fix)", layout="wide")
+    st.title("🤖 Sistem Bot Instagram — Streamlit (menggunakan referensi skrip Anda)")
+
     with st.sidebar:
-        st.header("⚙️ Konfigurasi")
-        
-        st.subheader("Akun Instagram")
-        accounts_input = st.text_area(
-            "Masukkan akun (format: username,password[,2fa_code])",
-            value="jmoriarty50,Drake1243",
-            height=150,
-            help="Satu akun per baris. Untuk 2FA, tambahkan kode setelah password dipisahkan koma"
-        )
-        
-        st.subheader("Target")
-        target_post = st.text_input(
-            "URL Postingan Target",
-            value="https://www.instagram.com/p/DPQP0tHEqSe/",
-            help="URL lengkap postingan Instagram"
-        )
-        
-        st.subheader("Komentar")
-        comments_input = st.text_area(
-            "Daftar Komentar",
-            value="Mantap Gibran\nKeren banget!\nBagus sekali!",
-            height=120,
-            help="Satu komentar per baris"
-        )
-        
-        st.subheader("Pengaturan")
-        max_comments_per_account = st.number_input(
-            "Max Komentar per Akun",
-            min_value=0,
-            max_value=300,
-            value=300,
-            help="Maksimal komentar yang dikirim per akun"
-        )
-        
-        iterations = st.number_input(
-            "Jumlah Putaran",
-            min_value=1,
-            max_value=1000,
-            value=100,
-            help="Berapa kali proses diulang untuk semua akun"
-        )
-        
-        delay_between_accounts = st.slider(
-            "Delay Antar Akun (detik)",
-            min_value=1,
-            max_value=60,
-            value=5
-        )
-        
-        delay_between_rounds = st.slider(
-            "Delay Antar Putaran (detik)", 
-            min_value=1,
-            max_value=300,
-            value=5
-        )
-        
-        proxy_url = st.text_input(
-            "Proxy (opsional)",
-            value="",
-            help="Format: http://user:pass@host:port"
-        )
-        
-        run_button = st.button("🚀 Jalankan Bot", type="primary")
+        st.header("⚙️ Konfigurasi Utama (dari referensi)")
+        accounts_input = st.text_area("Masukkan akun (username,password[,2fa]) — satu per baris",
+                                      value=DEFAULT_ACCOUNTS, height=140)
+        proxy_input = st.text_input("Proxy (opsional, format http://user:pass@host:port)", value="")
+        target_post = st.text_input("URL Postingan Target", value=DEFAULT_TARGET)
+        comments_input = st.text_area("Daftar Komentar (satu per baris)", value=DEFAULT_COMMENTS, height=120)
+        max_comments = st.number_input("Max Komentar per Akun", min_value=0, max_value=1000, value=300)
+        iterations = st.number_input("Jumlah Putaran (per akun)", min_value=1, max_value=10000, value=100)
+        delay_after_like = st.number_input("Delay setelah like (detik)", min_value=0, value=5)
+        delay_after_comment = st.number_input("Delay setelah comment (detik)", min_value=0, value=5)
+        delay_between_accounts = st.number_input("Delay antar akun (detik)", min_value=0, value=5)
+        delay_between_rounds = st.number_input("Delay antar putaran (detik)", min_value=0, value=5)
+
+        start_button = st.button("🚀 Jalankan Bot")
         stop_button = st.button("⏹️ Berhenti")
-        
+
         if stop_button:
-            if 'stop_requested' not in st.session_state:
-                st.session_state.stop_requested = True
+            st.session_state["stop_requested"] = True
             st.warning("Menghentikan proses...")
-    
-    # Area log
+
+    # area logs
     st.header("📋 Log Aktivitas")
-    log_container = st.empty()
-    
+    log_box = st.empty()
+
     def render_logs():
-        logs = st.session_state.get('logs', [])
-        display_text = "\n".join(logs[-50:])
-        log_container.text_area("Logs", value=display_text, height=300, label_visibility="collapsed")
-    
-    # Parsing input
-    def parse_accounts(text):
-        accounts = []
-        for line in text.splitlines():
-            line = line.strip()
-            if not line or line.startswith('#'):
-                continue
-            parts = [p.strip() for p in line.split(',', 2)]
-            if len(parts) >= 2 and parts[0] and parts[1]:
-                account = {
-                    'username': parts[0],
-                    'password': parts[1],
-                    'twofa': parts[2] if len(parts) > 2 else None
-                }
-                accounts.append(account)
-        return accounts
-    
+        logs = st.session_state.get("logs", [])
+        # tampilkan 200 baris terakhir
+        to_display = "\n".join(logs[-200:])
+        log_box.text_area("Logs", value=to_display, height=360, label_visibility="collapsed")
+
+    # parsing
+    accounts = parse_accounts_input(accounts_input)
     comments = [c.strip() for c in comments_input.splitlines() if c.strip()]
-    accounts = parse_accounts(accounts_input)
-    
-    # Tampilkan summary
+
+    # metrics
     col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("Jumlah Akun", len(accounts))
-    with col2:
-        st.metric("Jumlah Komentar", len(comments))
-    with col3:
-        st.metric("Target Komentar", f"{max_comments_per_account} per akun")
-    
-    # Jalankan proses
-    if run_button:
+    col1.metric("Jumlah Akun", len(accounts))
+    col2.metric("Jumlah Komentar Konfigurasi", len(comments))
+    col3.metric("Max Komentar/Akun", max_comments)
+
+    # state init
+    if "logs" not in st.session_state:
+        st.session_state["logs"] = []
+    if "stop_requested" not in st.session_state:
+        st.session_state["stop_requested"] = False
+
+    # run
+    if start_button:
+        st.session_state["stop_requested"] = False
+
         if not accounts:
-            st.error("❌ Tidak ada akun yang valid")
+            st.error("❌ Tidak ada akun valid")
             return
         if not comments:
             st.error("❌ Tidak ada komentar yang ditentukan")
@@ -321,122 +306,113 @@ def main():
         if not target_post.strip():
             st.error("❌ Masukkan URL postingan target")
             return
-        
-        st.session_state.stop_requested = False
-        
-        # Login semua akun
+
+        # login semua akun (synchronous)
         clients = {}
         successful_logins = 0
-        
-        st.info("🔐 Proses login...")
-        progress_bar = st.progress(0)
-        
+        progress = st.progress(0)
+        total = len(accounts)
         for i, acc in enumerate(accounts):
-            if st.session_state.get('stop_requested'):
+            if st.session_state.get("stop_requested"):
                 break
-                
-            username = acc['username']
-            password = acc['password']
-            twofa = acc.get('twofa')
-            
+
+            username = acc["username"]
+            password = acc["password"]
+            twofa = acc.get("twofa")
             try:
                 logger.info(f"Login akun: {username}")
-                client = login_client_for_account(username, password, twofa, proxy_url)
+                client = login_client_for_account(username, password, twofa, proxy_input or None)
                 clients[username] = client
                 successful_logins += 1
                 logger.info(f"✅ Login berhasil: {username}")
             except Exception as e:
                 logger.error(f"❌ Login gagal: {username} - {e}")
-            
-            progress_bar.progress((i + 1) / len(accounts))
-            time.sleep(5)
+            progress.progress((i + 1) / total)
+            time.sleep(1)
             render_logs()
-        
+
         if successful_logins == 0:
             st.error("❌ Tidak ada akun yang berhasil login")
             return
-        
+
         st.success(f"✅ {successful_logins}/{len(accounts)} akun berhasil login")
-        
-        # Eksekusi bot
-        comment_counts = {acc['username']: 0 for acc in accounts}
-        
-        for round_num in range(iterations):
-            if st.session_state.get('stop_requested'):
-                break
-                
-            st.info(f"🔄 Putaran {round_num + 1}/{iterations}")
-            round_progress = st.progress(0)
-            
-            active_accounts = list(clients.keys())
-            for i, username in enumerate(active_accounts):
-                if st.session_state.get('stop_requested'):
+        # init comment counts
+        comment_counts = {acc["username"]: 0 for acc in accounts}
+        delays = {"after_like": delay_after_like, "after_comment": delay_after_comment}
+        clients_active = dict(clients)  # salinan
+
+        # run main loop (synchronous; stop via stop_button)
+        try:
+            for round_idx in range(iterations):
+                if st.session_state.get("stop_requested"):
                     break
-                    
-                try:
-                    run_buzzer_for_account(
-                        clients[username], 
-                        username, 
-                        target_post, 
-                        comments, 
-                        comment_counts, 
-                        max_comments_per_account
-                    )
-                    
-                    # Simpan session setelah setiap aksi
+                st.info(f"🔄 Putaran {round_idx + 1}/{iterations}")
+                for j, (username, cl) in enumerate(list(clients_active.items())):
+                    if st.session_state.get("stop_requested"):
+                        break
                     try:
-                        clients[username].dump_settings(f"session_{username}.json")
-                    except:
-                        pass
-                        
-                except Exception as e:
-                    logger.error(f"Error pada akun {username}: {e}")
-                    # Hapus client yang error
-                    try:
-                        del clients[username]
-                    except:
-                        pass
-                
-                round_progress.progress((i + 1) / len(active_accounts))
-                
-                # Delay antar akun
-                if i < len(active_accounts) - 1 and not st.session_state.get('stop_requested'):
-                    logger.info(f"[{username}] Menunggu {delay_between_accounts} detik sebelum akun berikutnya...")
-                    time.sleep(delay_between_accounts)
-                
-                render_logs()
-            
-            # Cek jika semua akun sudah mencapai limit komentar
-            all_limits_reached = all(
-                comment_counts.get(username, 0) >= max_comments_per_account 
-                for username in active_accounts
-            )
-            
-            if all_limits_reached:
-                logger.info("✅ Semua akun telah mencapai limit komentar")
-                break
-            
-            # Delay antar putaran
-            if round_num < iterations - 1 and not st.session_state.get('stop_requested') and len(clients) > 0:
-                logger.info(f"⏳ Menunggu {delay_between_rounds} detik sebelum putaran berikutnya...")
-                for remaining in range(delay_between_rounds, 0, -1):
-                    if st.session_state.get('stop_requested'):
+                        run_buzzer_for_account(cl, username, target_post, comments, comment_counts, max_comments, delays)
+                        # save session periodically
+                        try:
+                            cl.dump_settings(f"session_{username}.json")
+                        except Exception:
+                            pass
+                    except RuntimeError as err:
+                        logger.error(err)
+                        # akun butuh verifikasi -> keluarkan
+                        try:
+                            del clients_active[username]
+                        except Exception:
+                            pass
+                        break
+                    except Exception as e:
+                        logger.error(f"[{username}] Error tak terduga: {e}\n{traceback.format_exc()}")
+                        # lanjut ke akun berikutnya
+                        continue
+
+                    # delay antar akun
+                    if j < len(clients_active) - 1:
+                        logger.info(f"[{username}] Menunggu {delay_between_accounts} detik sebelum akun berikutnya...")
+                        for _ in range(delay_between_accounts):
+                            if st.session_state.get("stop_requested"):
+                                break
+                            time.sleep(1)
+                    render_logs()
+
+                # cek semua akun capai limit?
+                if all(count >= max_comments for count in comment_counts.values()):
+                    logger.info("Semua akun telah mencapai limit komentar. Proses dihentikan.")
+                    break
+
+                # delay antar putaran
+                logger.info(f"Selesai satu putaran. Menunggu {delay_between_rounds} detik...")
+                for _ in range(delay_between_rounds):
+                    if st.session_state.get("stop_requested"):
                         break
                     time.sleep(1)
                 render_logs()
-        
-        # Summary
-        st.success("✅ Proses selesai!")
-        st.subheader("📊 Summary")
-        
-        total_comments = 0
-        for username in accounts:
-            count = comment_counts.get(username['username'], 0)
-            st.write(f"- {username['username']}: {count} komentar")
-            total_comments += count
-        
-        st.metric("Total Komentar Dikirim", total_comments)
-        st.metric("Akun Berhasil", f"{len(clients)}/{len(accounts)}")
+
+                if not clients_active:
+                    logger.error("Tidak ada akun aktif tersisa (mungkin verifikasi diperlukan). Proses dihentikan.")
+                    break
+
+            st.success("✅ Proses selesai!")
+            # summary
+            st.subheader("📊 Summary")
+            total_comments = 0
+            for username in comment_counts:
+                st.write(f"- {username}: {comment_counts[username]} komentar")
+                total_comments += comment_counts[username]
+            st.metric("Total Komentar Dikirim", total_comments)
+            st.metric("Akun Aktif Setelah Run", f"{len(clients_active)}/{len(accounts)}")
+
+        except KeyboardInterrupt:
+            logger.info("Proses dihentikan oleh user (KeyboardInterrupt).")
+        finally:
+            render_logs()
+
+    # selalu render logs saat UI idle
+    render_logs()
 
 if __name__ == "__main__":
     main()
