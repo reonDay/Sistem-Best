@@ -1,51 +1,22 @@
-# streamlit_instabot.py
+# streamlit_instabot_fixed.py
 # Requirements:
-# pip install instagrapi streamlit
+# pip install -U instagrapi streamlit
 
 import os
 import time
 import random
 import logging
-import io
 import traceback
 import streamlit as st
 from instagrapi import Client
 from instagrapi.exceptions import ChallengeRequired, TwoFactorRequired, ClientError
 
 # -----------------------
-# PATCH: Fix untuk validation error scans_profile
+# NOTE:
+# - Perbaikan utama: ketika komentar gagal karena ValidationError scans_profile,
+#   lakukan fallback ke private_request endpoint "media/{media_pk}/comment/".
+# - Ini menghindari parsing pydantic Media yang sering menyebabkan error.
 # -----------------------
-from pydantic import ConfigDict
-from instagrapi.types import Media
-
-# Patch untuk membuat field scans_profile optional
-Media.model_config = ConfigDict(extra='allow', arbitrary_types_allowed=True)
-
-# Monkey patch untuk media_info
-original_media_info = Client.media_info
-
-def patched_media_info(self, media_pk):
-    try:
-        return original_media_info(self, media_pk)
-    except Exception as e:
-        if "scans_profile" in str(e):
-            # Fallback: gunakan media_pk saja tanpa memproses media_info
-            logger = logging.getLogger("instagrapi_streamlit")
-            logger.warning(f"Fallback media_info untuk media_pk {media_pk} karena error: {e}")
-            # Return minimal media object
-            return type('Media', (), {'pk': media_pk})()
-        raise
-
-Client.media_info = patched_media_info
-
-# -----------------------
-# Konfigurasi untuk server gratis
-# -----------------------
-st.set_page_config(
-    page_title="Sistem Bot Instagram",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
 
 # Handler untuk logging di Streamlit
 class StreamlitLogHandler(logging.Handler):
@@ -58,8 +29,8 @@ class StreamlitLogHandler(logging.Handler):
         msg = self.format(record)
         st.session_state['logs'].append(msg)
         # Batasi jumlah log yang disimpan
-        if len(st.session_state['logs']) > 1000:
-            st.session_state['logs'] = st.session_state['logs'][-1000:]
+        if len(st.session_state['logs']) > 1200:
+            st.session_state['logs'] = st.session_state['logs'][-1200:]
 
 def create_logger():
     logger = logging.getLogger("instagrapi_streamlit")
@@ -107,6 +78,7 @@ def login_client_for_account(username: str, password: str, two_factor_code: str 
     if os.path.exists(session_file):
         try:
             cl.load_settings(session_file)
+            # login with stored settings (some versions require cl.login to refresh)
             cl.login(username, password)
             logger.info(f"[{username}] Session berhasil dimuat dari {session_file}")
             return cl
@@ -114,7 +86,7 @@ def login_client_for_account(username: str, password: str, two_factor_code: str 
             logger.info(f"[{username}] Gagal memuat session, login ulang: {e}")
             try:
                 os.remove(session_file)
-            except:
+            except Exception:
                 pass
     
     # Login normal
@@ -125,7 +97,6 @@ def login_client_for_account(username: str, password: str, two_factor_code: str 
             cl.login(username, password)
     except TwoFactorRequired:
         logger.error(f"[{username}] Diperlukan kode 2FA")
-        # Untuk Streamlit, kita minta input 2FA via UI
         raise RuntimeError(f"[{username}] Diperlukan kode verifikasi 2FA. Silakan tambahkan kode 2FA di input akun.")
     except ChallengeRequired:
         logger.error(f"[{username}] Diperlukan verifikasi challenge")
@@ -146,20 +117,36 @@ def login_client_for_account(username: str, password: str, two_factor_code: str 
     
     return cl
 
+def _fallback_private_comment(cl: Client, media_pk: int, comment_text: str):
+    """
+    Fallback: panggil private API langsung untuk membuat komentar.
+    Endpoint yang umum dipakai: "media/{media_pk}/comment/"
+    Data biasanya berupa {"comment_text": "..."}.
+    Kita coba catch error dan laporkan jika gagal.
+    """
+    try:
+        endpoint = f"media/{media_pk}/comment/"
+        data = {"comment_text": comment_text}
+        logger.debug(f"Fallback private_request -> {endpoint} with data length {len(comment_text)}")
+        resp = cl.private_request(endpoint, data=data)
+        # Jika API mengembalikan keterangan error, raise
+        return resp
+    except Exception as e:
+        logger.warning(f"Fallback private_request gagal: {e}")
+        # Kembalikan exception agar pemanggil bisa log dan lanjut
+        raise
+
 def run_buzzer_for_account(cl: Client, username: str, target_post_url: str, comments: list, comment_counts: dict, max_comments: int):
     try:
-        # Dapatkan media PK dari URL
+        # Dapatkan media PK dari URL (integer)
         media_pk = cl.media_pk_from_url(target_post_url)
-        
-        # MODIFIKASI: Hindari penggunaan media_info yang menyebabkan error scans_profile
-        # Gunakan pendekatan langsung tanpa media_info
         logger.info(f"[{username}] Memproses postingan dengan PK: {media_pk}")
         
-        # Like postingan
+        # Like postingan (media_like menerima media_pk)
         try:
             cl.media_like(media_pk)
             logger.info(f"[{username}] Berhasil like postingan")
-            time.sleep(5)  # Delay seperti di script asli
+            time.sleep(5)
         except Exception as e:
             logger.warning(f"[{username}] Gagal like: {e}")
         
@@ -167,13 +154,42 @@ def run_buzzer_for_account(cl: Client, username: str, target_post_url: str, comm
         current_count = comment_counts.get(username, 0)
         if current_count < max_comments and comments:
             comment_text = random.choice(comments)
+            # Pertama, coba cara "biasa" menggunakan media_id string (dokumentasi)
+            tried_comment = False
             try:
-                cl.media_comment(media_pk, comment_text)
-                comment_counts[username] = current_count + 1
-                logger.info(f"[{username}] Berhasil komentar: '{comment_text}' ({comment_counts[username]}/{max_comments})")
-                time.sleep(5)  # Delay seperti di script asli
+                # media_id biasanya berupa "{media_pk}_{owner_user_pk}"
+                # cl.media_id(media_pk) mungkin memanggil media_info, jadi bungkus try/except
+                try:
+                    media_id = cl.media_id(media_pk)
+                except Exception as e_media_id:
+                    # jika gagal membuat media_id, tetap lanjut ke fallback private_request
+                    logger.debug(f"[{username}] media_id() gagal: {e_media_id}")
+                    media_id = None
+                
+                if media_id:
+                    try:
+                        # Perhatikan: signature: media_comment(media_id: str, text: str)
+                        cl.media_comment(media_id, comment_text)
+                        comment_counts[username] = current_count + 1
+                        logger.info(f"[{username}] Berhasil komentar: '{comment_text}' ({comment_counts[username]}/{max_comments})")
+                        tried_comment = True
+                        time.sleep(5)
+                    except Exception as e_comment:
+                        # Jika error berkaitan dengan scans_profile/pydantic, lanjut ke fallback
+                        logger.warning(f"[{username}] media_comment gagal: {e_comment}")
+                        # jangan re-raise — kita akan coba fallback
+                # Jika media_id None atau komentar gagal, lakukan fallback
+                if not tried_comment:
+                    # fallback ke private_request menggunakan media_pk integer
+                    try:
+                        _fallback_private_comment(cl, media_pk, comment_text)
+                        comment_counts[username] = current_count + 1
+                        logger.info(f"[{username}] Berhasil komentar (fallback): '{comment_text}' ({comment_counts[username]}/{max_comments})")
+                        time.sleep(5)
+                    except Exception as e_fb:
+                        logger.warning(f"[{username}] Fallback komentar gagal: {e_fb}")
             except Exception as e:
-                logger.warning(f"[{username}] Gagal komentar: {e}")
+                logger.warning(f"[{username}] Gagal pada proses komentar: {e}")
         else:
             logger.info(f"[{username}] Skip komentar (limit tercapai atau tidak ada komentar)")
             
@@ -181,21 +197,20 @@ def run_buzzer_for_account(cl: Client, username: str, target_post_url: str, comm
         raise RuntimeError(f"[{username}] Diperlukan verifikasi challenge")
     except Exception as e:
         logger.error(f"[{username}] Error saat memproses postingan: {e}")
-        # Untuk error scans_profile, kita lanjutkan saja karena like/comment mungkin masih berhasil
+        # Jika error bukan yang spesifik terkait scans_profile, biarkan caller menangani
         if "scans_profile" not in str(e):
             raise
 
 # ================================
-# UI Streamlit
+# UI Streamlit (sama seperti sebelumnya, sedikit rapi)
 # ================================
 
 def main():
-    st.title("🤖 Sistem Bot Instagram")
+    st.set_page_config(page_title="Sistem Bot Instagram (Fixed)", layout="wide", initial_sidebar_state="expanded")
+    st.title("🤖 Sistem Bot Instagram — FIX untuk komentar scans_profile")
     st.markdown("""
-    **Disclaimer:** 
-    - Gunakan dengan bijak dan bertanggung jawab
-    - Patuhi Terms of Service Instagram
-    - Risiko ditanggung pengguna
+    **Catatan perbaikan:** saya menambahkan fallback untuk komentar yang gagal karena `pydantic` validation error (scans_profile).
+    Jika Anda belum memperbarui `instagrapi`, silakan coba `pip install -U instagrapi` juga.
     """)
     
     with st.sidebar:
@@ -228,31 +243,29 @@ def main():
         max_comments_per_account = st.number_input(
             "Max Komentar per Akun",
             min_value=0,
-            max_value=300,  # Diperbesar seperti di script asli
-            value=300,
-            help="Maksimal komentar yang dikirim per akun"
+            max_value=300,
+            value=300
         )
         
         iterations = st.number_input(
             "Jumlah Putaran",
             min_value=1,
             max_value=1000,
-            value=100,
-            help="Berapa kali proses diulang untuk semua akun"
+            value=100
         )
         
         delay_between_accounts = st.slider(
             "Delay Antar Akun (detik)",
             min_value=1,
             max_value=60,
-            value=5  # Sesuai script asli
+            value=5
         )
         
         delay_between_rounds = st.slider(
             "Delay Antar Putaran (detik)", 
             min_value=1,
             max_value=300,
-            value=5  # Sesuai script asli
+            value=5
         )
         
         proxy_url = st.text_input(
@@ -265,8 +278,7 @@ def main():
         stop_button = st.button("⏹️ Berhenti")
         
         if stop_button:
-            if 'stop_requested' not in st.session_state:
-                st.session_state.stop_requested = True
+            st.session_state.stop_requested = True
             st.warning("Menghentikan proses...")
     
     # Area log
@@ -275,7 +287,7 @@ def main():
     
     def render_logs():
         logs = st.session_state.get('logs', [])
-        display_text = "\n".join(logs[-50:])  # Tampilkan 50 log terakhir
+        display_text = "\n".join(logs[-60:])
         log_container.text_area("Logs", value=display_text, height=300, label_visibility="collapsed")
     
     # Parsing input
@@ -320,8 +332,6 @@ def main():
             return
         
         st.session_state.stop_requested = False
-        
-        # Login semua akun
         clients = {}
         successful_logins = 0
         
@@ -346,7 +356,7 @@ def main():
                 logger.error(f"❌ Login gagal: {username} - {e}")
             
             progress_bar.progress((i + 1) / len(accounts))
-            time.sleep(5)  # Delay seperti di script asli
+            time.sleep(2)
             render_logs()
         
         if successful_logins == 0:
@@ -383,23 +393,26 @@ def main():
                     # Simpan session setelah setiap aksi
                     try:
                         clients[username].dump_settings(f"session_{username}.json")
-                    except:
+                    except Exception:
                         pass
                         
                 except Exception as e:
                     logger.error(f"Error pada akun {username}: {e}")
-                    # Hapus client yang error
+                    # Hapus client yang error agar tidak mengulang masalah terus-menerus
                     try:
                         del clients[username]
-                    except:
+                    except Exception:
                         pass
                 
-                round_progress.progress((i + 1) / len(active_accounts))
+                round_progress.progress((i + 1) / max(1, len(active_accounts)))
                 
                 # Delay antar akun
                 if i < len(active_accounts) - 1 and not st.session_state.get('stop_requested'):
                     logger.info(f"[{username}] Menunggu {delay_between_accounts} detik sebelum akun berikutnya...")
-                    time.sleep(delay_between_accounts)
+                    for _ in range(delay_between_accounts):
+                        if st.session_state.get('stop_requested'):
+                            break
+                        time.sleep(1)
                 
                 render_logs()
             
@@ -407,7 +420,7 @@ def main():
             all_limits_reached = all(
                 comment_counts.get(username, 0) >= max_comments_per_account 
                 for username in active_accounts
-            )
+            ) if active_accounts else True
             
             if all_limits_reached:
                 logger.info("✅ Semua akun telah mencapai limit komentar")
@@ -427,13 +440,13 @@ def main():
         st.subheader("📊 Summary")
         
         total_comments = 0
-        for username in accounts:
-            count = comment_counts.get(username['username'], 0)
-            st.write(f"- {username['username']}: {count} komentar")
+        for acc in accounts:
+            count = comment_counts.get(acc['username'], 0)
+            st.write(f"- {acc['username']}: {count} komentar")
             total_comments += count
         
         st.metric("Total Komentar Dikirim", total_comments)
-        st.metric("Akun Berhasil", f"{len(clients)}/{len(accounts)}")
+        st.metric("Akun Aktif Setelah Run", f"{len(clients)}/{len(accounts)}")
 
 if __name__ == "__main__":
     main()
