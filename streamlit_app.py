@@ -63,7 +63,10 @@ if not any(isinstance(h, StreamlitLogHandler) for h in logger.handlers):
 # ================================
 # DEFAULT KONFIGURASI (bisa diubah di sidebar)
 # ================================
-DEFAULT_ACCOUNTS = "jmoriarty50,Drake1243"
+DEFAULT_ACCOUNTS = """sleepingmaster275,jasuke00
+restisukawati,jasuke00
+devanoaditama21,jasuke00
+lia.santika24,jasuke00"""
 DEFAULT_TARGET = "https://www.instagram.com/p/DPQP0tHEqSe/"
 DEFAULT_COMMENTS = "Mantap Gibran"
 
