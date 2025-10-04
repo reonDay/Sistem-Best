@@ -47,9 +47,11 @@ if not any(isinstance(h, StreamlitLogHandler) for h in logger.handlers):
 # ================================
 # DEFAULT KONFIGURASI
 # ================================
-DEFAULT_ACCOUNTS = """username1,password1
-username2,password2"""
-DEFAULT_TARGET = "https://www.instagram.com/p/Cxxxxxxxxxx/"
+DEFAULT_ACCOUNTS =  """sleepingmaster275,jasuke00
+restisukawati,jasuke00
+devanoaditama21,jasuke00
+lia.santika24,jasuke00"""
+DEFAULT_TARGET = "https://www.instagram.com/p/DPWSqohCp2a/"
 DEFAULT_COMMENTS = "Keren!\nMantap!\nGood content!"
 
 FALLBACK_RETRIES = 3
