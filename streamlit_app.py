@@ -48,6 +48,7 @@ if not any(isinstance(h, StreamlitLogHandler) for h in logger.handlers):
 # DEFAULT KONFIGURASI
 # ================================
 ACCOUNTS_FILE = "accounts.txt"
+COMMENTS_FILE = "comments.txt"
 DEFAULT_ACCOUNTS = """restisukawati,jasuke00
 devanoaditama21,jasuke00
 lia.santika24,jasuke00"""
@@ -58,7 +59,7 @@ FALLBACK_RETRIES = 3
 FALLBACK_BACKOFF = 2
 
 # ================================
-# FUNGSI BACA/TULIS FILE AKUN
+# FUNGSI BACA/TULIS FILE AKUN & KOMENTAR
 # ================================
 
 def load_accounts_from_file():
@@ -85,6 +86,32 @@ def save_accounts_to_file(accounts_text):
         return True
     except Exception as e:
         logger.error(f"Gagal menyimpan file akun: {e}")
+        return False
+
+def load_comments_from_file():
+    """Membaca data komentar dari file"""
+    try:
+        if os.path.exists(COMMENTS_FILE):
+            with open(COMMENTS_FILE, 'r', encoding='utf-8') as f:
+                return f.read().strip()
+        else:
+            # Buat file default jika tidak ada
+            with open(COMMENTS_FILE, 'w', encoding='utf-8') as f:
+                f.write(DEFAULT_COMMENTS)
+            return DEFAULT_COMMENTS
+    except Exception as e:
+        logger.error(f"Gagal membaca file komentar: {e}")
+        return DEFAULT_COMMENTS
+
+def save_comments_to_file(comments_text):
+    """Menyimpan data komentar ke file"""
+    try:
+        with open(COMMENTS_FILE, 'w', encoding='utf-8') as f:
+            f.write(comments_text)
+        logger.info("Data komentar berhasil disimpan ke file")
+        return True
+    except Exception as e:
+        logger.error(f"Gagal menyimpan file komentar: {e}")
         return False
 
 def parse_accounts_input(text):
@@ -233,9 +260,12 @@ def main():
     st.title("🤖 Sistem Muda Gembira")
     st.markdown("Sistem Muda Gembira")
     
-    # Inisialisasi data akun dari file
+    # Inisialisasi data akun dan komentar dari file
     if "accounts_data" not in st.session_state:
         st.session_state.accounts_data = load_accounts_from_file()
+    
+    if "comments_data" not in st.session_state:
+        st.session_state.comments_data = load_comments_from_file()
     
     # Tab untuk memisahkan konfigurasi dan monitoring
     tab1, tab2 = st.tabs(["⚙️ Konfigurasi", "📊 Monitoring"])
@@ -267,11 +297,11 @@ def main():
             # Tombol refresh untuk memuat ulang dari file
             col_btn_acc = st.columns([1, 1])
             with col_btn_acc[0]:
-                if st.button("🔄 Muat Ulang dari File", use_container_width=True):
+                if st.button("🔄 Muat Ulang Akun dari File", use_container_width=True):
                     st.session_state.accounts_data = load_accounts_from_file()
                     st.rerun()
             with col_btn_acc[1]:
-                if st.button("💾 Simpan ke File", use_container_width=True):
+                if st.button("💾 Simpan Akun ke File", use_container_width=True):
                     if save_accounts_to_file(accounts_input):
                         st.success("Data akun berhasil disimpan!")
                     else:
@@ -287,12 +317,33 @@ def main():
         with col2:
             st.subheader("Komentar")
             st.markdown("Satu komentar per baris")
+            
+            # Input komentar dengan callback untuk auto-save
+            def update_comments():
+                save_comments_to_file(st.session_state.comments_input)
+                st.session_state.comments_data = st.session_state.comments_input
+            
             comments_input = st.text_area(
                 "Daftar komentar yang akan digunakan:",
-                value=DEFAULT_COMMENTS,
+                value=st.session_state.comments_data,
                 height=120,
-                help="Bot akan memilih komentar secara acak dari daftar ini"
+                help="Bot akan memilih komentar secara acak dari daftar ini",
+                key="comments_input",
+                on_change=update_comments
             )
+            
+            # Tombol refresh untuk memuat ulang komentar dari file
+            col_btn_com = st.columns([1, 1])
+            with col_btn_com[0]:
+                if st.button("🔄 Muat Ulang Komentar dari File", use_container_width=True):
+                    st.session_state.comments_data = load_comments_from_file()
+                    st.rerun()
+            with col_btn_com[1]:
+                if st.button("💾 Simpan Komentar ke File", use_container_width=True):
+                    if save_comments_to_file(comments_input):
+                        st.success("Data komentar berhasil disimpan!")
+                    else:
+                        st.error("Gagal menyimpan data komentar!")
             
             st.subheader("Jumlah Aksi")
             col_a, col_b = st.columns(2)
@@ -347,7 +398,7 @@ def main():
             accounts = parse_accounts_input(st.session_state.accounts_data)
             st.metric("Jumlah Akun", len(accounts))
         with col_stat2:
-            comments = [c.strip() for c in comments_input.splitlines() if c.strip()]
+            comments = [c.strip() for c in st.session_state.comments_data.splitlines() if c.strip()]
             st.metric("Komentar Tersedia", len(comments))
         with col_stat3:
             st.metric("Target Komentar/Akun", max_comments)
@@ -380,6 +431,8 @@ def main():
         
         # Validasi input
         accounts = parse_accounts_input(st.session_state.accounts_data)
+        comments = [c.strip() for c in st.session_state.comments_data.splitlines() if c.strip()]
+        
         if not accounts:
             st.error("❌ Tidak ada akun yang dimasukkan")
             return
