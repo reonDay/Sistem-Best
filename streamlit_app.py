@@ -47,8 +47,8 @@ if not any(isinstance(h, StreamlitLogHandler) for h in logger.handlers):
 # ================================
 # DEFAULT KONFIGURASI
 # ================================
-DEFAULT_ACCOUNTS =  """
-restisukawati,jasuke00
+ACCOUNTS_FILE = "accounts.txt"
+DEFAULT_ACCOUNTS = """restisukawati,jasuke00
 devanoaditama21,jasuke00
 lia.santika24,jasuke00"""
 DEFAULT_TARGET = "https://www.instagram.com/p/DPWSqohCp2a/"
@@ -58,8 +58,34 @@ FALLBACK_RETRIES = 3
 FALLBACK_BACKOFF = 2
 
 # ================================
-# FUNGSI UTAMA
+# FUNGSI BACA/TULIS FILE AKUN
 # ================================
+
+def load_accounts_from_file():
+    """Membaca data akun dari file"""
+    try:
+        if os.path.exists(ACCOUNTS_FILE):
+            with open(ACCOUNTS_FILE, 'r', encoding='utf-8') as f:
+                return f.read().strip()
+        else:
+            # Buat file default jika tidak ada
+            with open(ACCOUNTS_FILE, 'w', encoding='utf-8') as f:
+                f.write(DEFAULT_ACCOUNTS)
+            return DEFAULT_ACCOUNTS
+    except Exception as e:
+        logger.error(f"Gagal membaca file akun: {e}")
+        return DEFAULT_ACCOUNTS
+
+def save_accounts_to_file(accounts_text):
+    """Menyimpan data akun ke file"""
+    try:
+        with open(ACCOUNTS_FILE, 'w', encoding='utf-8') as f:
+            f.write(accounts_text)
+        logger.info("Data akun berhasil disimpan ke file")
+        return True
+    except Exception as e:
+        logger.error(f"Gagal menyimpan file akun: {e}")
+        return False
 
 def parse_accounts_input(text):
     accounts = []
@@ -207,6 +233,10 @@ def main():
     st.title("🤖 Instagram Bot Sederhana")
     st.markdown("Bot otomatis untuk like dan comment di Instagram")
     
+    # Inisialisasi data akun dari file
+    if "accounts_data" not in st.session_state:
+        st.session_state.accounts_data = load_accounts_from_file()
+    
     # Tab untuk memisahkan konfigurasi dan monitoring
     tab1, tab2 = st.tabs(["⚙️ Konfigurasi", "📊 Monitoring"])
     
@@ -219,12 +249,33 @@ def main():
             st.subheader("Akun Instagram")
             st.markdown("Format: `username,password`")
             st.markdown("Untuk 2FA: `username,password,kode2fa`")
+            
+            # Input akun dengan callback untuk auto-save
+            def update_accounts():
+                save_accounts_to_file(st.session_state.accounts_input)
+                st.session_state.accounts_data = st.session_state.accounts_input
+            
             accounts_input = st.text_area(
                 "Masukkan akun-akun Anda:",
-                value=DEFAULT_ACCOUNTS,
+                value=st.session_state.accounts_data,
                 height=120,
-                help="Satu akun per baris"
+                help="Satu akun per baris",
+                key="accounts_input",
+                on_change=update_accounts
             )
+            
+            # Tombol refresh untuk memuat ulang dari file
+            col_btn_acc = st.columns([1, 1])
+            with col_btn_acc[0]:
+                if st.button("🔄 Muat Ulang dari File", use_container_width=True):
+                    st.session_state.accounts_data = load_accounts_from_file()
+                    st.rerun()
+            with col_btn_acc[1]:
+                if st.button("💾 Simpan ke File", use_container_width=True):
+                    if save_accounts_to_file(accounts_input):
+                        st.success("Data akun berhasil disimpan!")
+                    else:
+                        st.error("Gagal menyimpan data akun!")
             
             st.subheader("Target Postingan")
             target_post = st.text_input(
@@ -293,7 +344,7 @@ def main():
         # Statistik real-time
         col_stat1, col_stat2, col_stat3 = st.columns(3)
         with col_stat1:
-            accounts = parse_accounts_input(accounts_input)
+            accounts = parse_accounts_input(st.session_state.accounts_data)
             st.metric("Jumlah Akun", len(accounts))
         with col_stat2:
             comments = [c.strip() for c in comments_input.splitlines() if c.strip()]
@@ -328,6 +379,7 @@ def main():
         st.session_state["stop_requested"] = False
         
         # Validasi input
+        accounts = parse_accounts_input(st.session_state.accounts_data)
         if not accounts:
             st.error("❌ Tidak ada akun yang dimasukkan")
             return
