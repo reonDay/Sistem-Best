@@ -248,7 +248,7 @@ def main():
         with col1:
             st.subheader("Akun Instagram")
             st.markdown("Format: `username,password`")
-            st.markdown("Untuk 2FA: `username,password,kode2fa`")
+
             
             # Input akun dengan callback untuk auto-save
             def update_accounts():
