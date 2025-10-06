@@ -3,8 +3,6 @@ import time
 import random
 import logging
 import traceback
-import glob
-from datetime import datetime, timedelta
 import streamlit as st
 from instagrapi import Client
 from instagrapi.exceptions import ChallengeRequired, TwoFactorRequired, ClientError
@@ -51,7 +49,6 @@ if not any(isinstance(h, StreamlitLogHandler) for h in logger.handlers):
 # ================================
 ACCOUNTS_FILE = "accounts.txt"
 COMMENTS_FILE = "comments.txt"
-SESSIONS_DIR = "sessions"
 DEFAULT_ACCOUNTS = """restisukawati,jasuke00
 devanoaditama21,jasuke00
 lia.santika24,jasuke00"""
@@ -60,53 +57,6 @@ DEFAULT_COMMENTS = "Keren!\nMantap!\nGood content!"
 
 FALLBACK_RETRIES = 3
 FALLBACK_BACKOFF = 2
-
-# ================================
-# FUNGSI UTILITAS SESSION
-# ================================
-
-def ensure_sessions_dir():
-    """Membuat directory sessions jika belum ada"""
-    if not os.path.exists(SESSIONS_DIR):
-        os.makedirs(SESSIONS_DIR)
-        logger.info(f"Directory sessions dibuat: {SESSIONS_DIR}")
-
-def get_session_path(username: str) -> str:
-    """Mendapatkan path file session"""
-    ensure_sessions_dir()
-    return os.path.join(SESSIONS_DIR, f"session_{username}.json")
-
-def cleanup_expired_sessions(days_old: int = 30):
-    """Membersihkan session file yang sudah expired"""
-    try:
-        current_time = time.time()
-        expired_count = 0
-        
-        for session_file in glob.glob(os.path.join(SESSIONS_DIR, "session_*.json")):
-            try:
-                file_time = os.path.getmtime(session_file)
-                if current_time - file_time > days_old * 86400:  # days to seconds
-                    os.remove(session_file)
-                    expired_count += 1
-                    logger.info(f"Session expired dihapus: {os.path.basename(session_file)}")
-            except Exception as e:
-                logger.warning(f"Gagal menghapus session file {session_file}: {e}")
-        
-        if expired_count > 0:
-            logger.info(f"Total session expired dihapus: {expired_count}")
-            
-    except Exception as e:
-        logger.error(f"Error saat cleanup sessions: {e}")
-
-def validate_session_age(session_file: str, max_age_days: int = 30) -> bool:
-    """Validasi usia session file"""
-    if not os.path.exists(session_file):
-        return False
-    
-    file_time = os.path.getmtime(session_file)
-    current_time = time.time()
-    
-    return (current_time - file_time) <= (max_age_days * 86400)
 
 # ================================
 # FUNGSI BACA/TULIS FILE AKUN & KOMENTAR
@@ -165,7 +115,6 @@ def save_comments_to_file(comments_text):
         return False
 
 def parse_accounts_input(text):
-    """Parse input akun dari text"""
     accounts = []
     for line in text.splitlines():
         line = line.strip()
@@ -180,16 +129,9 @@ def parse_accounts_input(text):
             })
     return accounts
 
-# ================================
-# FUNGSI LOGIN & SESSION MANAGEMENT
-# ================================
-
 def login_client_for_account(username: str, password: str, twofa: str = None, proxy: str = None) -> Client:
-    """Login dengan session management yang ditingkatkan"""
-    session_file = get_session_path(username)
+    session_file = f"session_{username}.json"
     cl = Client()
-    
-    # Set proxy jika ada
     if proxy:
         try:
             cl.set_proxy(proxy)
@@ -197,34 +139,21 @@ def login_client_for_account(username: str, password: str, twofa: str = None, pr
         except Exception as e:
             logger.warning(f"[{username}] Gagal set proxy: {e}")
 
-    # Coba load session yang ada dengan validasi usia
-    if os.path.exists(session_file) and validate_session_age(session_file):
+    if os.path.exists(session_file):
         try:
             cl.load_settings(session_file)
-            logger.info(f"[{username}] Session loaded dari {session_file}")
-            
-            # Test session dengan request ringan
             try:
-                user_id = cl.user_id
-                logger.debug(f"[{username}] Session valid, user_id: {user_id}")
-                return cl
-            except Exception as e:
-                logger.warning(f"[{username}] Session expired atau invalid: {e}")
-                # Session tidak valid, hapus dan login ulang
-                try:
-                    os.remove(session_file)
-                    logger.info(f"[{username}] Session invalid dihapus")
-                except Exception:
-                    pass
-        except Exception as e:
-            logger.warning(f"[{username}] Gagal load session: {e}")
+                cl.login(username, password)
+            except Exception:
+                logger.debug(f"[{username}] load_settings ok, login refresh gagal tapi lanjut.")
+            logger.info(f"[{username}] Session loaded dari {session_file}.")
+            return cl
+        except Exception:
             try:
                 os.remove(session_file)
             except Exception:
                 pass
 
-    # Login baru diperlukan
-    logger.info(f"[{username}] Melakukan login baru...")
     try:
         if twofa:
             cl.login(username, password, verification_code=twofa)
@@ -243,39 +172,15 @@ def login_client_for_account(username: str, password: str, twofa: str = None, pr
         logger.error(f"[{username}] Error tak terduga saat login: {e}")
         raise RuntimeError(f"[{username}] Login gagal: {e}")
 
-    # Simpan session setelah login sukses
     try:
         cl.dump_settings(session_file)
-        logger.info(f"[{username}] Login sukses, session disimpan di {session_file}")
+        logger.info(f"[{username}] Login sukses, session disimpan.")
     except Exception as e:
         logger.warning(f"[{username}] Gagal menyimpan session: {e}")
 
     return cl
 
-def backup_session_files():
-    """Membuat backup session files"""
-    try:
-        backup_dir = os.path.join(SESSIONS_DIR, "backup")
-        if not os.path.exists(backup_dir):
-            os.makedirs(backup_dir)
-        
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup_path = os.path.join(backup_dir, f"sessions_backup_{timestamp}")
-        
-        import shutil
-        shutil.copytree(SESSIONS_DIR, backup_path, ignore=shutil.ignore_patterns('backup'))
-        logger.info(f"Backup session dibuat: {backup_path}")
-        return True
-    except Exception as e:
-        logger.warning(f"Gagal membuat backup session: {e}")
-        return False
-
-# ================================
-# FUNGSI UTAMA BOT
-# ================================
-
 def _fallback_private_comment(cl: Client, media_pk: int, comment_text: str) -> bool:
-    """Fallback method untuk komentar"""
     for attempt in range(1, FALLBACK_RETRIES + 1):
         try:
             endpoint = f"media/{media_pk}/comment/"
@@ -295,15 +200,12 @@ def _fallback_private_comment(cl: Client, media_pk: int, comment_text: str) -> b
     return False
 
 def run_buzzer_for_account(cl: Client, username: str, target_url: str, comments: list, comment_counts: dict, max_comments: int, delays: dict):
-    """Menjalankan aksi like dan comment untuk satu akun"""
     try:
         pk = cl.media_pk_from_url(target_url)
-        logger.info(f"[{username}] Target media PK: {pk}")
     except Exception as e:
         logger.error(f"[{username}] Gagal konversi URL ke media_pk: {e}")
         return
 
-    # Like media
     try:
         cl.media_like(pk)
         logger.info(f"[{username}] Liked media PK {pk}")
@@ -313,7 +215,6 @@ def run_buzzer_for_account(cl: Client, username: str, target_url: str, comments:
         if isinstance(e, ChallengeRequired) or "Challenge" in str(e):
             raise RuntimeError(f"[{username}] Verifikasi IG diperlukan.")
 
-    # Comment media
     current = comment_counts.get(username, 0)
     if current >= max_comments:
         logger.info(f"[{username}] Skip komentar: limit tercapai ({current}/{max_comments})")
@@ -338,7 +239,6 @@ def run_buzzer_for_account(cl: Client, username: str, target_url: str, comments:
             logger.error(f"[{username}] Terdeteksi rate-limit/action-blocked: {e}")
             return
 
-    # Fallback comment method
     try:
         ok = _fallback_private_comment(cl, pk, komentar)
         if ok:
@@ -357,24 +257,18 @@ def run_buzzer_for_account(cl: Client, username: str, target_url: str, comments:
 # ================================
 def main():
     st.set_page_config(page_title="Muda Gembira", layout="wide")
-    st.title("🤖 Sistem Muda Gembira - Enhanced")
-    st.markdown("Sistem Otomatisasi Instagram dengan Session Management")
+    st.title("🤖 Sistem Muda Gembira")
+    st.markdown("Sistem Muda Gembira")
     
-    # Inisialisasi session state
+    # Inisialisasi data akun dan komentar dari file
     if "accounts_data" not in st.session_state:
         st.session_state.accounts_data = load_accounts_from_file()
     
     if "comments_data" not in st.session_state:
         st.session_state.comments_data = load_comments_from_file()
     
-    if "logs" not in st.session_state:
-        st.session_state["logs"] = []
-    
-    if "stop_requested" not in st.session_state:
-        st.session_state["stop_requested"] = False
-    
     # Tab untuk memisahkan konfigurasi dan monitoring
-    tab1, tab2, tab3 = st.tabs(["⚙️ Konfigurasi", "📊 Monitoring", "🔧 Session Management"])
+    tab1, tab2 = st.tabs(["⚙️ Konfigurasi", "📊 Monitoring"])
     
     with tab1:
         st.header("Pengaturan Dasar")
@@ -383,7 +277,8 @@ def main():
         
         with col1:
             st.subheader("Akun Instagram")
-            st.markdown("Format: `username,password` atau `username,password,2fa_code`")
+            st.markdown("Format: `username,password`")
+
             
             # Input akun dengan callback untuk auto-save
             def update_accounts():
@@ -482,10 +377,6 @@ def main():
             
             delay_between_rounds = st.number_input("Delay antar putaran (detik)", min_value=1, value=10)
             proxy_input = st.text_input("Proxy (opsional)", placeholder="http://user:pass@host:port")
-            
-            st.subheader("Session Settings")
-            session_max_age = st.number_input("Maksimal usia session (hari)", min_value=1, max_value=90, value=30)
-            auto_cleanup = st.checkbox("Auto-cleanup session expired", value=True)
         
         # Tombol aksi
         col_btn1, col_btn2, col_btn3 = st.columns([1,1,2])
@@ -502,7 +393,7 @@ def main():
         st.header("Monitoring & Logs")
         
         # Statistik real-time
-        col_stat1, col_stat2, col_stat3, col_stat4 = st.columns(4)
+        col_stat1, col_stat2, col_stat3 = st.columns(3)
         with col_stat1:
             accounts = parse_accounts_input(st.session_state.accounts_data)
             st.metric("Jumlah Akun", len(accounts))
@@ -511,11 +402,6 @@ def main():
             st.metric("Komentar Tersedia", len(comments))
         with col_stat3:
             st.metric("Target Komentar/Akun", max_comments)
-        with col_stat4:
-            # Hitung jumlah session yang ada
-            session_files = glob.glob(os.path.join(SESSIONS_DIR, "session_*.json"))
-            valid_sessions = [sf for sf in session_files if validate_session_age(sf)]
-            st.metric("Session Valid", f"{len(valid_sessions)}/{len(accounts)}")
         
         # Progress bar
         progress_bar = st.progress(0)
@@ -526,64 +412,6 @@ def main():
         log_container = st.container()
         with log_container:
             log_display = st.empty()
-    
-    with tab3:
-        st.header("Session Management")
-        
-        col_sess1, col_sess2 = st.columns(2)
-        
-        with col_sess1:
-            st.subheader("Session Operations")
-            
-            if st.button("🔄 Cleanup Expired Sessions", use_container_width=True):
-                with st.spinner("Membersihkan session expired..."):
-                    cleanup_expired_sessions()
-                    st.success("Cleanup session selesai!")
-                    st.rerun()
-            
-            if st.button("💾 Backup All Sessions", use_container_width=True):
-                with st.spinner("Membuat backup session..."):
-                    if backup_session_files():
-                        st.success("Backup session berhasil!")
-                    else:
-                        st.error("Gagal membuat backup session!")
-            
-            if st.button("🗑️ Delete All Sessions", use_container_width=True):
-                if st.checkbox("Yakin hapus semua session?"):
-                    session_files = glob.glob(os.path.join(SESSIONS_DIR, "session_*.json"))
-                    deleted_count = 0
-                    for sf in session_files:
-                        try:
-                            os.remove(sf)
-                            deleted_count += 1
-                        except Exception as e:
-                            st.error(f"Gagal hapus {sf}: {e}")
-                    st.success(f"Berhasil menghapus {deleted_count} session files!")
-                    st.rerun()
-        
-        with col_sess2:
-            st.subheader("Session Info")
-            
-            session_files = glob.glob(os.path.join(SESSIONS_DIR, "session_*.json"))
-            if session_files:
-                st.write(f"**Total Session Files:** {len(session_files)}")
-                
-                # Tampilkan info session
-                for sf in session_files[:10]:  # Batasi tampilan
-                    username = os.path.basename(sf).replace("session_", "").replace(".json", "")
-                    file_time = os.path.getmtime(sf)
-                    age_days = (time.time() - file_time) / 86400
-                    
-                    col_info1, col_info2 = st.columns([2,1])
-                    with col_info1:
-                        st.write(f"`{username}`")
-                    with col_info2:
-                        st.write(f"{age_days:.1f} hari")
-                
-                if len(session_files) > 10:
-                    st.info(f"Dan {len(session_files) - 10} session lainnya...")
-            else:
-                st.info("Tidak ada session files yang ditemukan.")
 
     # Fungsi render logs
     def render_logs():
@@ -591,14 +419,15 @@ def main():
         to_display = "\n".join(logs[-100:])  # Tampilkan 100 baris terakhir
         log_display.text_area("Logs", value=to_display, height=300, label_visibility="collapsed")
 
+    # Inisialisasi session state
+    if "logs" not in st.session_state:
+        st.session_state["logs"] = []
+    if "stop_requested" not in st.session_state:
+        st.session_state["stop_requested"] = False
+
     # Jalankan bot ketika tombol ditekan
     if start_button:
         st.session_state["stop_requested"] = False
-        
-        # Auto-cleanup session jika diaktifkan
-        if auto_cleanup:
-            with st.spinner("Membersihkan session expired..."):
-                cleanup_expired_sessions(session_max_age)
         
         # Validasi input
         accounts = parse_accounts_input(st.session_state.accounts_data)
@@ -667,11 +496,10 @@ def main():
                             
                         try:
                             run_buzzer_for_account(cl, username, target_post, comments, comment_counts, max_comments, delays)
-                            # Backup session periodik
                             try:
-                                cl.dump_settings(get_session_path(username))
-                            except Exception as e:
-                                logger.warning(f"[{username}] Gagal backup session: {e}")
+                                cl.dump_settings(f"session_{username}.json")
+                            except Exception:
+                                pass
                         except RuntimeError as err:
                             logger.error(err)
                             try:
@@ -722,16 +550,11 @@ def main():
 
             except Exception as e:
                 st.error(f"Error selama proses: {e}")
-                logger.error(f"Error selama proses: {traceback.format_exc()}")
             finally:
-                # Final backup sessions
-                backup_session_files()
                 render_logs()
 
     # Selama tidak berjalan, tetap render logs
     render_logs()
 
 if __name__ == "__main__":
-    # Cleanup session expired saat start
-    cleanup_expired_sessions(30)
     main()
