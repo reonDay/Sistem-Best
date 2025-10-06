@@ -229,9 +229,9 @@ def run_buzzer_for_account(cl: Client, username: str, target_url: str, comments:
 # STREAMLIT UI SEDERHANA
 # ================================
 def main():
-    st.set_page_config(page_title="Instagram Bot - Simple", layout="wide")
-    st.title("🤖 Instagram Bot Sederhana")
-    st.markdown("Bot otomatis untuk like dan comment di Instagram")
+    st.set_page_config(page_title="Muda Gembira", layout="wide")
+    st.title("🤖 Sistem Muda Gembira")
+    st.markdown("Sistem Muda Gembira")
     
     # Inisialisasi data akun dari file
     if "accounts_data" not in st.session_state:
