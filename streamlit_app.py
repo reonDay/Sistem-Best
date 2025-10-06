@@ -295,17 +295,26 @@ def main():
             )
             
             # Tombol refresh untuk memuat ulang dari file
-            col_btn_acc = st.columns([1, 1])
+            col_btn_acc = st.columns([1, 1, 1])
             with col_btn_acc[0]:
-                if st.button("🔄 Muat Ulang Akun dari File", use_container_width=True):
+                if st.button("🔄 Muat Ulang Akun", use_container_width=True):
                     st.session_state.accounts_data = load_accounts_from_file()
                     st.rerun()
             with col_btn_acc[1]:
-                if st.button("💾 Simpan Akun ke File", use_container_width=True):
+                if st.button("💾 Simpan Akun", use_container_width=True):
                     if save_accounts_to_file(accounts_input):
                         st.success("Data akun berhasil disimpan!")
                     else:
                         st.error("Gagal menyimpan data akun!")
+            with col_btn_acc[2]:
+                # Tombol download untuk akun
+                st.download_button(
+                    label="📥 Download Akun",
+                    data=st.session_state.accounts_data,
+                    file_name="accounts.txt",
+                    mime="text/plain",
+                    use_container_width=True
+                )
             
             st.subheader("Target Postingan")
             target_post = st.text_input(
@@ -333,17 +342,26 @@ def main():
             )
             
             # Tombol refresh untuk memuat ulang komentar dari file
-            col_btn_com = st.columns([1, 1])
+            col_btn_com = st.columns([1, 1, 1])
             with col_btn_com[0]:
-                if st.button("🔄 Muat Ulang Komentar dari File", use_container_width=True):
+                if st.button("🔄 Muat Ulang Komentar", use_container_width=True):
                     st.session_state.comments_data = load_comments_from_file()
                     st.rerun()
             with col_btn_com[1]:
-                if st.button("💾 Simpan Komentar ke File", use_container_width=True):
+                if st.button("💾 Simpan Komentar", use_container_width=True):
                     if save_comments_to_file(comments_input):
                         st.success("Data komentar berhasil disimpan!")
                     else:
                         st.error("Gagal menyimpan data komentar!")
+            with col_btn_com[2]:
+                # Tombol download untuk komentar
+                st.download_button(
+                    label="📥 Download Komentar",
+                    data=st.session_state.comments_data,
+                    file_name="comments.txt",
+                    mime="text/plain",
+                    use_container_width=True
+                )
             
             st.subheader("Jumlah Aksi")
             col_a, col_b = st.columns(2)
@@ -412,6 +430,41 @@ def main():
         log_container = st.container()
         with log_container:
             log_display = st.empty()
+
+        # Tombol download logs
+        st.subheader("Ekspor Data")
+        col_exp1, col_exp2, col_exp3 = st.columns(3)
+        
+        with col_exp1:
+            # Download logs
+            logs_text = "\n".join(st.session_state.get("logs", []))
+            st.download_button(
+                label="📥 Download Logs",
+                data=logs_text,
+                file_name="bot_logs.txt",
+                mime="text/plain",
+                use_container_width=True
+            )
+        
+        with col_exp2:
+            # Download akun terkini
+            st.download_button(
+                label="📥 Download Akun Terkini",
+                data=st.session_state.accounts_data,
+                file_name="accounts_current.txt",
+                mime="text/plain",
+                use_container_width=True
+            )
+        
+        with col_exp3:
+            # Download komentar terkini
+            st.download_button(
+                label="📥 Download Komentar Terkini",
+                data=st.session_state.comments_data,
+                file_name="comments_current.txt",
+                mime="text/plain",
+                use_container_width=True
+            )
 
     # Fungsi render logs
     def render_logs():
