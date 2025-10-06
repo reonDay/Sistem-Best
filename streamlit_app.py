@@ -45,6 +45,92 @@ if not any(isinstance(h, StreamlitLogHandler) for h in logger.handlers):
     logger.addHandler(sh)
 
 # ================================
+# SESSION MANAGEMENT OTOMATIS
+# ================================
+
+def create_or_load_session(username: str, password: str, twofa: str = None, proxy: str = None) -> Client:
+    """
+    Buat atau muat session secara otomatis
+    Mengembalikan Client object yang sudah login
+    """
+    session_file = f"session_{username}.json"
+    cl = Client()
+    
+    if proxy:
+        try:
+            cl.set_proxy(proxy)
+            logger.info(f"[{username}] Proxy set: {proxy}")
+        except Exception as e:
+            logger.warning(f"[{username}] Gagal set proxy: {e}")
+
+    # Jika session file ada, coba load
+    if os.path.exists(session_file):
+        try:
+            logger.info(f"[{username}] Mendeteksi session file. Mencoba load...")
+            cl.load_settings(session_file)
+            
+            # Coba refresh login untuk validasi session
+            try:
+                if twofa:
+                    cl.login(username, password, verification_code=twofa)
+                else:
+                    cl.login(username, password)
+                logger.info(f"[{username}] Session berhasil dimuat dan divalidasi.")
+            except Exception as e:
+                logger.debug(f"[{username}] Session loaded, login refresh optional: {e}")
+            
+            # Update session file
+            cl.dump_settings(session_file)
+            return cl
+            
+        except (TwoFactorRequired, ChallengeRequired, ClientError) as e:
+            logger.warning(f"[{username}] Error saat load session: {e}. Menghapus dan mencoba fresh login.")
+            try:
+                os.remove(session_file)
+            except Exception:
+                pass
+        except Exception as e:
+            logger.warning(f"[{username}] Gagal load session: {e}. Mencoba fresh login.")
+            try:
+                os.remove(session_file)
+            except Exception:
+                pass
+
+    # Fresh login jika session tidak ada atau gagal load
+    try:
+        logger.info(f"[{username}] Melakukan fresh login...")
+        if twofa:
+            cl.login(username, password, verification_code=twofa)
+        else:
+            cl.login(username, password)
+            
+    except TwoFactorRequired:
+        if twofa:
+            # Gunakan kode 2FA yang sudah disediakan
+            cl.two_factor_login(twofa)
+        else:
+            logger.error(f"[{username}] Diperlukan 2FA/OTP tetapi tidak ada kode yang disediakan.")
+            raise RuntimeError(f"[{username}] Diperlukan kode 2FA/OTP. Tambahkan kode pada input akun (username,password,2fa).")
+    except ChallengeRequired:
+        logger.error(f"[{username}] ChallengeRequired: Verifikasi manual diperlukan.")
+        raise RuntimeError(f"[{username}] Verifikasi IG (challenge) diperlukan; verifikasi manual lewat Instagram.")
+    except ClientError as e:
+        logger.error(f"[{username}] ClientError saat login: {e}")
+        raise RuntimeError(f"[{username}] Login gagal: {e}")
+    except Exception as e:
+        logger.error(f"[{username}] Error tak terduga saat login: {e}")
+        raise RuntimeError(f"[{username}] Login gagal: {e}")
+
+    # Simpan session setelah login berhasil
+    try:
+        cl.dump_settings(session_file)
+        logger.info(f"[{username}] Login sukses, session disimpan ke {session_file}")
+    except Exception as e:
+        logger.warning(f"[{username}] Gagal menyimpan session: {e}")
+
+    return cl
+
+# ================================
 # DEFAULT KONFIGURASI
 # ================================
 ACCOUNTS_FILE = "accounts.txt"
@@ -130,55 +216,10 @@ def parse_accounts_input(text):
     return accounts
 
 def login_client_for_account(username: str, password: str, twofa: str = None, proxy: str = None) -> Client:
-    session_file = f"session_{username}.json"
-    cl = Client()
-    if proxy:
-        try:
-            cl.set_proxy(proxy)
-            logger.info(f"[{username}] Proxy set: {proxy}")
-        except Exception as e:
-            logger.warning(f"[{username}] Gagal set proxy: {e}")
-
-    if os.path.exists(session_file):
-        try:
-            cl.load_settings(session_file)
-            try:
-                cl.login(username, password)
-            except Exception:
-                logger.debug(f"[{username}] load_settings ok, login refresh gagal tapi lanjut.")
-            logger.info(f"[{username}] Session loaded dari {session_file}.")
-            return cl
-        except Exception:
-            try:
-                os.remove(session_file)
-            except Exception:
-                pass
-
-    try:
-        if twofa:
-            cl.login(username, password, verification_code=twofa)
-        else:
-            cl.login(username, password)
-    except TwoFactorRequired:
-        logger.error(f"[{username}] Diperlukan 2FA/OTP.")
-        raise RuntimeError(f"[{username}] Diperlukan kode 2FA/OTP. Tambahkan kode pada input akun (username,password,2fa).")
-    except ChallengeRequired:
-        logger.error(f"[{username}] ChallengeRequired: Verifikasi manual diperlukan.")
-        raise RuntimeError(f"[{username}] Verifikasi IG (challenge) diperlukan; verifikasi manual lewat Instagram.")
-    except ClientError as e:
-        logger.error(f"[{username}] ClientError saat login: {e}")
-        raise RuntimeError(f"[{username}] Login gagal: {e}")
-    except Exception as e:
-        logger.error(f"[{username}] Error tak terduga saat login: {e}")
-        raise RuntimeError(f"[{username}] Login gagal: {e}")
-
-    try:
-        cl.dump_settings(session_file)
-        logger.info(f"[{username}] Login sukses, session disimpan.")
-    except Exception as e:
-        logger.warning(f"[{username}] Gagal menyimpan session: {e}")
-
-    return cl
+    """
+    Wrapper untuk login dengan session management otomatis
+    """
+    return create_or_load_session(username, password, twofa, proxy)
 
 def _fallback_private_comment(cl: Client, media_pk: int, comment_text: str) -> bool:
     for attempt in range(1, FALLBACK_RETRIES + 1):
@@ -277,7 +318,7 @@ def main():
         
         with col1:
             st.subheader("Akun Instagram")
-            st.markdown("Format: `username,password`")
+            st.markdown("Format: `username,password` atau `username,password,2fa_code`")
 
             
             # Input akun dengan callback untuk auto-save
@@ -378,6 +419,59 @@ def main():
             delay_between_rounds = st.number_input("Delay antar putaran (detik)", min_value=1, value=10)
             proxy_input = st.text_input("Proxy (opsional)", placeholder="http://user:pass@host:port")
         
+        # Session Management
+        with st.expander("🔐 Session Management"):
+            st.subheader("Pengaturan Session")
+            
+            # Tampilkan info session yang ada
+            session_files = [f for f in os.listdir(".") if f.startswith("session_") and f.endswith(".json")]
+            st.info(f"📁 {len(session_files)} session tersimpan")
+            
+            col_sess1, col_sess2 = st.columns(2)
+            with col_sess1:
+                if st.button("🔄 Refresh Session List", use_container_width=True):
+                    st.rerun()
+            
+            with col_sess2:
+                if st.button("🗑️ Hapus Semua Session", type="secondary", use_container_width=True):
+                    deleted_count = 0
+                    for sf in session_files:
+                        try:
+                            os.remove(sf)
+                            deleted_count += 1
+                            logger.info(f"Session dihapus: {sf}")
+                        except Exception as e:
+                            logger.error(f"Gagal hapus session {sf}: {e}")
+                    
+                    if deleted_count > 0:
+                        st.success(f"✅ {deleted_count} session telah dihapus!")
+                    else:
+                        st.info("Tidak ada session yang dihapus")
+                    st.rerun()
+            
+            # Detail session
+            if session_files:
+                with st.expander("Lihat Detail Session"):
+                    for sf in session_files:
+                        username = sf.replace("session_", "").replace(".json", "")
+                        file_size = os.path.getsize(sf) if os.path.exists(sf) else 0
+                        modified_time = time.ctime(os.path.getmtime(sf)) if os.path.exists(sf) else "Unknown"
+                        
+                        col_det1, col_det2, col_det3 = st.columns([3, 2, 1])
+                        with col_det1:
+                            st.write(f"**{username}**")
+                        with col_det2:
+                            st.write(f"{file_size} bytes")
+                        with col_det3:
+                            if st.button("❌", key=f"del_{sf}"):
+                                try:
+                                    os.remove(sf)
+                                    st.success(f"Session {username} dihapus!")
+                                    time.sleep(1)
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Gagal hapus: {e}")
+        
         # Tombol aksi
         col_btn1, col_btn2, col_btn3 = st.columns([1,1,2])
         with col_btn1:
@@ -461,7 +555,8 @@ def main():
                 progress_bar.progress((i + 1) / len(accounts))
                 
                 try:
-                    client = login_client_for_account(username, password, twofa, proxy_input or None)
+                    # Gunakan sistem session otomatis
+                    client = create_or_load_session(username, password, twofa, proxy_input or None)
                     clients[username] = client
                     successful_logins += 1
                     logger.info(f"✅ Login berhasil: {username}")
@@ -496,10 +591,11 @@ def main():
                             
                         try:
                             run_buzzer_for_account(cl, username, target_post, comments, comment_counts, max_comments, delays)
+                            # Auto-save session setelah setiap aksi berhasil
                             try:
                                 cl.dump_settings(f"session_{username}.json")
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                logger.warning(f"[{username}] Gagal auto-save session: {e}")
                         except RuntimeError as err:
                             logger.error(err)
                             try:
