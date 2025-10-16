@@ -297,9 +297,9 @@ def run_buzzer_for_account(cl: Client, username: str, target_url: str, comments:
 # STREAMLIT UI SEDERHANA
 # ================================
 def main():
-    st.set_page_config(page_title="Muda Gembira", layout="wide")
-    st.title("🤖 Sistem Muda Gembira")
-    st.markdown("Sistem Muda Gembira")
+    st.set_page_config(page_title="Aksi Sinergi", layout="wide")
+    st.title("🤖 Sistem Aksi Sinergi")
+    st.markdown("Sistem Aksi Sinergi")
     
     # Inisialisasi data akun dan komentar dari file
     if "accounts_data" not in st.session_state:
